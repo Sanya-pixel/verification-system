@@ -18,18 +18,18 @@ A robust system for bulk import of product data, on-the-spot warehouse verificat
 | ORM | Spring Data JPA + Hibernate |
 | Bulk Processing | JDBC Template (batch inserts) |
 | Async Processing | Spring @Async + ThreadPoolTaskExecutor |
-| Cloud Storage | AWS S3 (Proof of Delivery photos) |
-| Security | Spring Security 6.x + RBAC |
+| Cloud Storage | AWS S3 SDK 2.x (Proof of Delivery photos) |
+| Security | Spring Security 6.x + HTTP Basic Auth + RBAC |
 | Password Hashing | BCrypt |
 | Build Tool | Maven 3.x |
 | CSV Parsing | Apache Commons CSV |
-| OCR Validation | Regex + AWS Rekognition ready |
+| OCR Validation | Regex-based + AWS Rekognition ready |
 
 ---
 
 ## Features Implemented
 
-### ✅ 1. Bulk Product Data Ingestion (Section 3.1 — Mandatory)
+### ✅ 1. Bulk Product Data Ingestion
 - Upload CSV file with millions of product records
 - Async processing — returns `202 Accepted` immediately, processes in background
 - JDBC batch inserts (batch size 5000) — handles millions of rows without OOM
@@ -37,39 +37,36 @@ A robust system for bulk import of product data, on-the-spot warehouse verificat
 - CSV columns: `WID`, `EAN`, `Manufacturing_Date`, `Expiry_Date`
 - WID uniqueness strictly enforced at DB + application level
 
-### ✅ 2. On-the-Floor Product Validation (Section 3.2 — Mandatory)
-- Scan WID barcode → instantly fetch product details (sub-second lookup)
-- Returns EAN, Manufacturing Date, Expiry Date
+### ✅ 2. On-the-Floor Product Validation
+- POST WID + operator ID + product photo → instantly fetch and verify product details
+- Returns verification result with OCR date cross-validation
 - Logs every verification event (which operator checked which WID and when)
-- Supports photo capture URL for physical product inspection
-- Optimised for mobile/handheld warehouse devices
+- Supports photo capture for physical product inspection
+- OCR regex extracts dates from product label image and cross-validates against DB
 
-### ✅ 3. Verification Reporting (Section 3.3 — Mandatory)
+### ✅ 3. Verification Reporting
 - Generate reports by custom date range (start date → end date)
 - Returns all verification activities within the range
 - Ordered by most recent first
 - Fast queries via indexed `verified_at` column
 
-### ✅ 4. Proof of Delivery (POD — Mandatory)
-- Driver scans AWB number
-- Captures photo/video as proof of delivery
+### ✅ 4. Proof of Delivery (POD)
+- Driver submits AWB number + GPS coordinates + photo
 - Uploads media to AWS S3 with structured path: `pod-records/{year}/{awb}_{timestamp}.jpg`
 - Returns cloud URI for the uploaded media
 
-### ✅ 5. User Administration (Section 6.1 — Optional)
-- UserAccount entity with dynamic role assignment
-- Admin creates users with specific roles during registration
+### ✅ 5. User Administration
+- Admin creates users with specific roles
 - Two roles: `ROLE_ADMIN` and `ROLE_OPERATOR`
-- Dedicated user management endpoints
-
-### ✅ 6. Role-Based Access Control (Section 6.2 — Optional)
-- Spring Security 6.x native RBAC enforcement
-- ROLE_ADMIN: bulk upload, reports, user management
-- ROLE_OPERATOR: verify products and submit POD only
 - BCrypt password hashing — never plain text
 
-### ✅ 7. OCR Image Date Validation (Section 6.3 — Optional)
-- ImageOcrValidationService automatically extracts dates from product label photos
+### ✅ 6. Role-Based Access Control
+- Spring Security 6.x native RBAC enforcement with HTTP Basic Authentication
+- ROLE_ADMIN: bulk upload, reports, user management
+- ROLE_OPERATOR: verify products and submit POD only
+
+### ✅ 7. OCR Image Date Validation
+- `ImageOcrValidationService` extracts dates from product label photos
 - Regex pattern matches ISO Standard dates (YYYY-MM-DD format)
 - Cross-validates extracted dates against DB record automatically
 - Architecture ready for AWS Rekognition or Tesseract OCR integration
@@ -82,7 +79,7 @@ A robust system for bulk import of product data, on-the-spot warehouse verificat
 src/main/java/com/warehouse/verification/
 ├── config/
 │   ├── AsyncConfig.java                   # Thread pool for bulk upload
-│   ├── SecurityConfig.java                # RBAC rules + UserDetailsService
+│   ├── SecurityConfig.java                # HTTP Basic Auth + RBAC rules
 │   └── S3Config.java                      # AWS S3 client bean
 ├── controller/
 │   ├── WarehouseController.java           # CSV upload, verify, reports
@@ -98,6 +95,7 @@ src/main/java/com/warehouse/verification/
 │   └── UserAccountRepository.java
 └── service/
     ├── InventoryService.java              # Bulk CSV async processing
+    ├── CustomUserDetailsService.java      # Spring Security user loader
     └── ImageOcrValidationService.java     # OCR date extraction + validation
 ```
 
@@ -129,7 +127,7 @@ CREATE TABLE verification_logs (
 );
 CREATE INDEX idx_logs_timestamp ON verification_logs(verified_at);
 
--- User accounts (Section 6.1)
+-- User accounts
 CREATE TABLE user_accounts (
     id       BIGSERIAL   NOT NULL,
     username VARCHAR(50) NOT NULL UNIQUE,
@@ -137,7 +135,7 @@ CREATE TABLE user_accounts (
     CONSTRAINT pk_user_accounts PRIMARY KEY (id)
 );
 
--- User roles (Section 6.2)
+-- User roles
 CREATE TABLE user_roles (
     user_id   BIGINT      NOT NULL,
     role_name VARCHAR(50) NOT NULL,
@@ -154,7 +152,7 @@ CREATE TABLE user_roles (
 - Java 17 ([Download Temurin JDK 17](https://adoptium.net/))
 - Maven 3.x
 - PostgreSQL 16 ([Download](https://www.postgresql.org/download/))
-- AWS Account with S3 bucket (optional — can comment out POD controller for local testing)
+- AWS Account with S3 bucket (optional — comment out POD controller for local testing)
 
 ### Step 1 — Clone the repository
 ```bash
@@ -206,17 +204,6 @@ CREATE TABLE user_roles (
     CONSTRAINT fk_user_roles FOREIGN KEY (user_id)
         REFERENCES user_accounts(id) ON DELETE CASCADE
 );
-
--- Seed default admin user (password: admin123)
-INSERT INTO user_accounts (username, password) VALUES
-('admin','$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy');
-INSERT INTO user_roles (user_id, role_name) VALUES (1, 'ROLE_ADMIN');
-
--- Seed default operator (password: operator123)
-INSERT INTO user_accounts (username, password) VALUES
-('operator1','$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi');
-INSERT INTO user_roles (user_id, role_name) VALUES (2, 'ROLE_OPERATOR');
-
 \q
 ```
 
@@ -249,31 +236,67 @@ spring.jpa.properties.hibernate.order_updates=true
 spring.servlet.multipart.max-file-size=200MB
 spring.servlet.multipart.max-request-size=250MB
 
-# AWS S3
+# AWS S3 (only needed for POD feature)
 aws.s3.bucket-name=your-bucket-name
 aws.region=ap-south-1
 ```
 
-### Step 4 — Build
+### Step 4 — Create default admin user
+Start the app first, then run:
 ```bash
-mvn clean package -DskipTests
+curl -X POST http://localhost:8080/api/v1/admin/users/create \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"admin123","roles":["ROLE_ADMIN"]}'
+
+curl -X POST http://localhost:8080/api/v1/admin/users/create \
+  -H "Content-Type: application/json" \
+  -d '{"username":"operator1","password":"operator123","roles":["ROLE_OPERATOR"]}'
 ```
 
-### Step 5 — Run
+### Step 5 — Build and Run
 ```bash
+mvn clean package -DskipTests
 java -jar target/verification-system-1.0.0-SNAPSHOT.jar
 ```
 
 App starts on: **http://localhost:8080**
 
-You should see:
-```
-Started VerificationSystemApplication in X.XXX seconds
-```
-
 ---
 
 ## API Reference
+
+### Authentication
+All endpoints (except user creation) use **HTTP Basic Authentication**.
+Pass credentials as `-u username:password` in curl or set `Authorization: Basic base64(username:password)` header.
+
+### User Administration
+
+#### Create new user — public (no auth needed)
+```
+POST /api/v1/admin/users/create
+Content-Type: application/json
+
+{
+  "username": "operator2",
+  "password": "pass123",
+  "roles": ["ROLE_OPERATOR"]
+}
+
+Response 200: "User registered successfully."
+Response 400: "Conflict: Username already taken."
+```
+
+#### Get all users — ADMIN only
+```
+GET /api/v1/admin/users
+Authorization: Basic admin:admin123
+
+Response 200:
+[
+  { "id": 1, "username": "admin", "roles": ["ROLE_ADMIN"] },
+  { "id": 2, "username": "operator1", "roles": ["ROLE_OPERATOR"] }
+]
+```
 
 ### Warehouse Operations
 
@@ -284,8 +307,7 @@ Authorization: Basic admin:admin123
 Content-Type: multipart/form-data
 Param: file (CSV)
 
-Response: 202 Accepted
-"Upload started in background."
+Response 202: "Upload started in background."
 ```
 
 Sample CSV format:
@@ -298,19 +320,14 @@ WID-003,1122334455667,2022-03-10,2024-03-10
 
 #### 2. Verify Product by WID — ADMIN + OPERATOR
 ```
-GET /api/v1/warehouse/verify/{wid}?operatorId=101
+POST /api/v1/warehouse/verify/{wid}?operatorId=101
 Authorization: Basic operator1:operator123
+Content-Type: multipart/form-data
+Param: image (product photo file)
 
-Response: 200 OK
-{
-  "wid": "WID-001",
-  "ean": "1234567890123",
-  "manufacturingDate": "2024-01-01",
-  "expiryDate": "2026-12-31"
-}
-
-Response: 404 Not Found
-(when WID does not exist in system)
+Response 200: "Verification logged successfully. Physical label dates match database records completely."
+Response 200: "Verification logged. WARNING: Physical label dates DO NOT match database records!"
+Response 404: thrown when WID does not exist
 ```
 
 #### 3. QA Date-Range Report — ADMIN only
@@ -318,7 +335,7 @@ Response: 404 Not Found
 GET /api/v1/warehouse/reports?start=2024-01-01&end=2026-12-31
 Authorization: Basic admin:admin123
 
-Response: 200 OK
+Response 200:
 [
   {
     "logId": 1,
@@ -331,8 +348,6 @@ Response: 200 OK
   }
 ]
 ```
-
----
 
 ### Proof of Delivery
 
@@ -349,109 +364,48 @@ Params:
   longitude   - GPS longitude (e.g. 77.5946)
   mediaFile   - Photo or video file
 
-Response: 200 OK
+Response 200:
 {
   "air_waybill_number": "AWB123456",
   "status": "SYNCHRONIZED",
-  "cloud_uri": "s3://bucket/pod-records/2025/AWB123456_1234567890.jpg",
-  "timestamp": "2025-06-07T10:30:00"
+  "cloud_resource_uri": "s3://bucket/pod-records/2025/AWB123456_1234567890.jpg",
+  "processed_timestamp": "2025-06-07T10:30:00"
 }
 ```
 
 ---
 
-### User Administration — Section 6.1
+## Quick Test with curl (Windows CMD)
 
-#### Create new user — ADMIN only
-```
-POST /api/v1/admin/users/create
-Authorization: Basic admin:admin123
-Content-Type: application/json
+```cmd
+# 1. Create admin user
+curl -X POST http://localhost:8080/api/v1/admin/users/create -H "Content-Type: application/json" -d "{\"username\":\"admin\",\"password\":\"admin123\",\"roles\":[\"ROLE_ADMIN\"]}"
 
-{
-  "username": "operator2",
-  "password": "pass123",
-  "roles": ["ROLE_OPERATOR"]
-}
+# 2. Create operator user
+curl -X POST http://localhost:8080/api/v1/admin/users/create -H "Content-Type: application/json" -d "{\"username\":\"operator1\",\"password\":\"operator123\",\"roles\":[\"ROLE_OPERATOR\"]}"
 
-Response: 200 OK
-"User registration successfully committed to tracking database."
+# 3. Upload CSV as admin
+curl -u admin:admin123 -X POST http://localhost:8080/api/v1/warehouse/inventory/bulk-upload -F "file=@test.csv"
 
-Response: 400 Bad Request
-"Conflict: Username choice already taken."
-```
+# 4. Get QA report as admin
+curl -u admin:admin123 "http://localhost:8080/api/v1/warehouse/reports?start=2024-01-01&end=2026-12-31"
 
-#### Get all users — ADMIN only
-```
-GET /api/v1/admin/users
-Authorization: Basic admin:admin123
-
-Response: 200 OK
-[
-  { "id": 1, "username": "admin", "roles": ["ROLE_ADMIN"] },
-  { "id": 2, "username": "operator1", "roles": ["ROLE_OPERATOR"] }
-]
+# 5. Try upload as operator — should get 403 FORBIDDEN
+curl -u operator1:operator123 -X POST http://localhost:8080/api/v1/warehouse/inventory/bulk-upload -F "file=@test.csv"
 ```
 
 ---
 
-## Quick Test with curl
-
-```bash
-# 1. Create sample CSV
-echo "WID,EAN,Manufacturing_Date,Expiry_Date
-WID-001,1234567890123,2024-01-01,2026-12-31
-WID-002,9876543210987,2023-06-15,2025-06-15" > test.csv
-
-# 2. Upload CSV (as admin)
-curl -X POST http://localhost:8080/api/v1/warehouse/inventory/bulk-upload \
-  -u admin:admin123 \
-  -F "file=@test.csv"
-
-# 3. Verify product (as operator)
-curl -u operator1:operator123 \
-  "http://localhost:8080/api/v1/warehouse/verify/WID-001?operatorId=101"
-
-# 4. Get QA report (as admin)
-curl -u admin:admin123 \
-  "http://localhost:8080/api/v1/warehouse/reports?start=2024-01-01&end=2026-12-31"
-
-# 5. Create new operator (as admin)
-curl -X POST http://localhost:8080/api/v1/admin/users/create \
-  -u admin:admin123 \
-  -H "Content-Type: application/json" \
-  -d '{"username":"op2","password":"pass123","roles":["ROLE_OPERATOR"]}'
-
-# 6. Try upload as operator — should get 403 FORBIDDEN
-curl -X POST http://localhost:8080/api/v1/warehouse/inventory/bulk-upload \
-  -u operator1:operator123 \
-  -F "file=@test.csv"
-```
-
----
-
-## RBAC Access Control — Section 6.2
+## RBAC Access Control
 
 | Endpoint | ROLE_ADMIN | ROLE_OPERATOR |
 |---|---|---|
+| POST /api/v1/admin/users/create | ✅ public | ✅ public |
+| GET /api/v1/admin/users | ✅ | ❌ 403 |
 | POST /inventory/bulk-upload | ✅ | ❌ 403 |
 | GET /warehouse/reports | ✅ | ❌ 403 |
-| POST /admin/users/create | ✅ | ❌ 403 |
-| GET /admin/users | ✅ | ❌ 403 |
-| GET /warehouse/verify/{wid} | ✅ | ✅ |
+| POST /warehouse/verify/{wid} | ✅ | ✅ |
 | POST /pod/synchronize | ✅ | ✅ |
-
----
-
-## OCR Image Validation — Section 6.3
-
-`ImageOcrValidationService` automatically extracts manufacturing and expiry dates from product label photos during floor verification:
-
-- Regex pattern engineered for ISO Standard Dates: `\b(\d{4}-\d{2}-\d{2})\b`
-- Extracts two dates from label image (MFG + EXP)
-- Cross-validates against database record
-- Returns `true` if dates match, `false` if mismatch detected
-- Architecture ready for AWS Rekognition or Tesseract OCR API integration
 
 ---
 
@@ -463,11 +417,11 @@ curl -X POST http://localhost:8080/api/v1/warehouse/inventory/bulk-upload \
 | **JDBC batch over JPA** | JPA loads entities into heap — millions of rows causes OutOfMemoryError. JdbcTemplate.batchUpdate bypasses Hibernate session cache entirely |
 | **ON CONFLICT DO UPDATE** | Idempotent upserts — re-uploading same file never corrupts data. Critical for WID uniqueness enforcement |
 | **PostgreSQL indexes** | WID is PK (instant lookup). EAN B-Tree index for product queries. verified_at indexed for date-range reports |
-| **Spring Security native RBAC** | No JWT complexity — Spring Security 6.x handles role enforcement natively with UserDetailsService |
+| **HTTP Basic Auth + Spring Security RBAC** | Simple, stateless authentication. Spring Security 6.x handles role enforcement natively with CustomUserDetailsService |
 | **BCrypt password hashing** | Industry standard — salted hash, resistant to rainbow table and brute force attacks |
 | **HikariCP pool size 40** | Handles concurrent warehouse operator requests without connection exhaustion |
 | **Thread pool 10-25 threads** | Bulk upload workers scale to 25 threads for high-throughput CSV processing |
-| **Set of roles per user** | Flexible role assignment — single user can have multiple roles if needed |
+| **@Lazy S3Client** | Allows app to start without AWS credentials for local testing |
 
 ---
 
@@ -477,6 +431,8 @@ curl -X POST http://localhost:8080/api/v1/warehouse/inventory/bulk-upload \
 |---|---|---|
 | admin | admin123 | ROLE_ADMIN |
 | operator1 | operator123 | ROLE_OPERATOR |
+
+> **Note:** Create users via `POST /api/v1/admin/users/create` on first run. Passwords are BCrypt hashed automatically.
 
 ---
 
